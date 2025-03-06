@@ -8,8 +8,9 @@ import {
   Tooltip,
   Legend,
 } from "recharts";
+import HeatMapModule from "react-heatmap-grid";
+const HeatMap = HeatMapModule.default; // Access the default export
 
-// Define the shape of your data
 interface PriceData {
   date: string;
   btc?: number;
@@ -17,14 +18,15 @@ interface PriceData {
   bnb?: number;
   sol?: number;
   ada?: number;
+  [key: string]: number | string | undefined;
 }
 
-const CryptoChart: React.FC = () => {
+const EthChart: React.FC = () => {
   const [data, setData] = useState<PriceData[]>([]);
+  const [correlationMatrix, setCorrelationMatrix] = useState<number[][]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // List of cryptocurrencies to fetch (CoinGecko IDs)
   const coins = ["bitcoin", "ethereum", "binancecoin", "solana", "cardano"];
 
   useEffect(() => {
@@ -33,7 +35,6 @@ const CryptoChart: React.FC = () => {
         setIsLoading(true);
         setError(null);
 
-        // Fetch data for each cryptocurrency
         const promises = coins.map(async (coin) => {
           const response = await fetch(
             `https://api.coingecko.com/api/v3/coins/${coin}/market_chart?vs_currency=usd&days=365`
@@ -47,34 +48,16 @@ const CryptoChart: React.FC = () => {
 
         const results = await Promise.all(promises);
 
-        // Log raw data for debugging
-        results.forEach(({ coin, prices }) => {
-          console.log(`${coin} prices length:`, prices.length);
-          console.log(`${coin} sample:`, prices.slice(0, 2));
-        });
-
-        // Extract raw prices for normalization
-        const rawPrices = results.map((result) =>
-          result.prices.length > 0
-            ? result.prices.map((price: [number, number]) => price[1])
-            : Array(365).fill(0)
-        );
-
-        // Calculate min and max for each coin
-        const minMax = rawPrices.map((prices) => {
-          const validPrices = prices.filter((p) => p !== 0 && !isNaN(p));
-          const min = validPrices.length > 0 ? Math.min(...validPrices) : 0;
-          const max = Math.max(...prices);
-          return { min, max };
-        });
-
-        // Log min and max for debugging
-        minMax.forEach(({ min, max }, i) => {
-          console.log(`${coins[i]} min:`, min, "max:", max);
-        });
-
-        // Process data into a unified, normalized format
         const combinedData: PriceData[] = [];
+        const minMax = results.map((result) => {
+          const prices = result.prices.map(
+            (price: [number, number]) => price[1]
+          );
+          return {
+            min: Math.min(...prices),
+            max: Math.max(...prices),
+          };
+        });
         const timestamps = results[0].prices.map(
           (price: [number, number]) => price[0]
         );
@@ -84,29 +67,22 @@ const CryptoChart: React.FC = () => {
             date: new Date(timestamp).toLocaleDateString(),
           };
           results.forEach((result, i) => {
-            const coinKey = coins[i].slice(0, 3).toLowerCase(); // Ensure this matches the keys in PriceData
+            const coinKey = coins[i].slice(0, 3).toLowerCase();
             const rawPrice = result.prices[index]?.[1] || 0;
             const { min, max } = minMax[i];
             const normalized =
-              max === min ? 0.5 : (rawPrice - min) / (max - min); // Set to 0.5 if min === max
+              max === min ? 0.5 : (rawPrice - min) / (max - min);
             entry[coinKey as keyof PriceData] = isNaN(normalized)
               ? 0
               : normalized;
-            console.log(`${coinKey} at index ${index}:`, {
-              rawPrice,
-              min,
-              max,
-              normalized,
-            });
           });
           combinedData.push(entry);
         });
 
-        // Log processed data for debugging
-        console.log("Processed Data Sample:", combinedData.slice(0, 5));
-        console.log("Data Length:", combinedData.length);
-
         setData(combinedData);
+
+        const matrix = calculateCorrelationMatrix(combinedData);
+        setCorrelationMatrix(matrix);
       } catch (err) {
         console.error("Fetch Error:", err);
         setError(err instanceof Error ? err.message : "Unknown error occurred");
@@ -117,6 +93,45 @@ const CryptoChart: React.FC = () => {
 
     fetchData();
   }, []);
+
+  const calculateCorrelationMatrix = (data: PriceData[]) => {
+    const coins = ["btc", "eth", "bnb", "sol", "ada"];
+    const matrix: number[][] = Array.from({ length: coins.length }, () =>
+      Array(coins.length).fill(0)
+    );
+
+    for (let i = 0; i < coins.length; i++) {
+      for (let j = 0; j < coins.length; j++) {
+        const coinA = coins[i];
+        const coinB = coins[j];
+        const pricesA = data
+          .map((entry) => entry[coinA] || 0)
+          .filter((value): value is number => typeof value === "number");
+        const pricesB = data
+          .map((entry) => entry[coinB] || 0)
+          .filter((value): value is number => typeof value === "number");
+        matrix[i][j] = pearsonCorrelation(pricesA, pricesB);
+      }
+    }
+
+    return matrix;
+  };
+
+  const pearsonCorrelation = (x: number[], y: number[]) => {
+    const n = x.length;
+    const sumX = x.reduce((a, b) => a + b, 0);
+    const sumY = y.reduce((a, b) => a + b, 0);
+    const sumXY = x.map((val, i) => val * y[i]).reduce((a, b) => a + b, 0);
+    const sumX2 = x.map((val) => val * val).reduce((a, b) => a + b, 0);
+    const sumY2 = y.map((val) => val * val).reduce((a, b) => a + b, 0);
+
+    const numerator = sumXY - (sumX * sumY) / n;
+    const denominator = Math.sqrt(
+      (sumX2 - (sumX * sumX) / n) * (sumY2 - (sumY * sumY) / n)
+    );
+
+    return denominator === 0 ? 0 : numerator / denominator;
+  };
 
   if (isLoading) {
     return <div className="text-center p-6 text-gray-600">Loading...</div>;
@@ -156,11 +171,12 @@ const CryptoChart: React.FC = () => {
           <Legend />
           <Line
             type="monotone"
-            dataKey="bit"
+            dataKey="btc"
             name="Bitcoin (BTC)"
             stroke="#f59e0b"
             strokeWidth={2}
             dot={false}
+            strokeDasharray="5 5"
           />
           <Line
             type="monotone"
@@ -172,11 +188,12 @@ const CryptoChart: React.FC = () => {
           />
           <Line
             type="monotone"
-            dataKey="bin"
+            dataKey="bnb"
             name="Binance Coin (BNB)"
             stroke="#facc15"
             strokeWidth={2}
             dot={false}
+            strokeDasharray="5 5"
           />
           <Line
             type="monotone"
@@ -188,16 +205,38 @@ const CryptoChart: React.FC = () => {
           />
           <Line
             type="monotone"
-            dataKey="car"
+            dataKey="ada"
             name="Cardano (ADA)"
             stroke="#3b82f6"
             strokeWidth={2}
             dot={false}
+            strokeDasharray="5 5"
           />
         </LineChart>
+      </div>
+
+      <h2 className="text-2xl font-bold text-gray-800 mb-4 mt-8">
+        Correlation Matrix
+      </h2>
+      <div className="bg-white p-4 rounded-lg shadow-lg">
+        {/* <HeatMap
+          xLabels={["BTC", "ETH", "BNB", "SOL", "ADA"]}
+          yLabels={["BTC", "ETH", "BNB", "SOL", "ADA"]}
+          data={correlationMatrix}
+          squares
+          height={45}
+          cellStyle={(background, value, min, max, data, x, y) => ({
+            background: `rgb(${
+              value < 0 ? "0, 0, 255" : "255, 0, 0"
+            }, ${Math.abs(value)})`,
+            fontSize: "11px",
+            color: "#fff",
+          })}
+          cellRender={(value) => value?.toFixed(2)}
+        /> */}
       </div>
     </div>
   );
 };
 
-export default CryptoChart;
+export default EthChart;
